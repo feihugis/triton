@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import torch
 import triton
 import triton.language as tl
@@ -223,95 +224,44 @@ def test_matmul():
     print(th_c)
     # print(tt_c)
 
-      # create fp8 tensor
+    # create fp8 tensor
     a_fp8 = fp16_2_fp8(a)
     b_fp8 = fp16_2_fp8(b)
-    # a_fp8 = 120 * torch.ones((K, M) if AT else (M, K), device="cuda", dtype=torch.int8) #fp16_2_fp8(a)
-    # b_fp8 = 120 * torch.ones((K, M) if AT else (M, K), device="cuda", dtype=torch.int8) #fp16_2_fp8(b)
-    # print(a_fp8)
-    # b_fp16 = fp8_2_fp16(b_fp8)
-    # print(a_fp8)
     c_fp8 = matmul(a_fp8, b_fp8)
     print(c_fp8)
     c_fp16 = fp8_2_fp16(c_fp8)
     print(c_fp16)
-    # print(b_fp16)
-    # print(b)
-    # c_fp8_tensor = torch.empty_like(tt_c, dtype=torch.int8)
-    # c_fp8 = triton.reinterpret(c_fp8_tensor, tl.float8)
 
-    # @triton.jit
-    # def matmul_fp8(a_fp8, b_fp8, c_fp8):
-    #   a = tl.load(a_fp8).to(tl.float16)
-    #   b = tl.load(b_fp8).to(tl.float16)
-    #   c = triton.ops.matmul(a, b)
-    #   tl.store(c, c_fp8)
+    for _ in range(8):
+        c_fp8 = matmul(a_fp8, b_fp8)
 
-    # matmul_fp8[(1, )](a_fp8, b_fp8, c_fp8)
-    # c_fp8 = triton.ops.matmul(a_fp8, b_fp8)
-    # c_fp16 = fp8_2_fp16(c_fp8)
+    triton_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(triton_graph):
+        c_fp8 = matmul(a_fp8, b_fp8)
 
-    # print(c_fp16)
+    triton_graph.replay()
 
+    repeat = 1024
 
+    torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(repeat):
+        triton_graph.replay()
+    torch.cuda.synchronize()
+    end = time.time()
+    print(f"triton fp8 matmul: {(end - start) / repeat * 1000} ms")
 
+    torch_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(torch_graph):
+        th_c = torch.matmul(a, b)
 
-def test_f16_to_f8_rounding():
-    """Takes all float16s, converts them to float8 and back to float16. Checks that the absolute
-    error is the minimum over all float8.
-    Or the same explanation a bit mathier:
-    for all f16 |f16 - fromf8(tof8(f16))| == min over all f8 |f16 - fromf8(f8)|"""
-    @triton.jit
-    def copy_kernel(input_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-        offsets = tl.program_id(axis=0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-        mask = offsets < n_elements
-        input = tl.load(input_ptr + offsets, mask=mask)
-        output = input
-        tl.store(output_ptr + offsets, output, mask=mask)
+    torch_graph.replay()
+    torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(repeat):
+        torch_graph.replay()
+    torch.cuda.synchronize()
+    end = time.time()
+    print(f"torch_graph fp8 matmul: {(end - start) / repeat * 1000} ms")
 
-    # torch.view with a dtype isn't supported in triton's torch yet so use numpy's view
-    f16_input_np = (
-        np.array(
-            range(-int(2 ** (16 - 1)), int(2 ** (16 - 1))), dtype=np.int16,
-        )
-        .view(np.float16)
-    )
-    f16_input = torch.tensor(f16_input_np, dtype=torch.float16, device='cuda')
-    n_elements = f16_input.numel()
-    f8_output_tensor = torch.empty_like(f16_input, dtype=torch.int8)
-    f8_output = triton.reinterpret(f8_output_tensor, tl.float8)
-    grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
-    copy_kernel[grid](f16_input, f8_output, n_elements, BLOCK_SIZE=1024)
-
-    f16_output = torch.empty_like(f16_input, dtype=torch.float16)
-    copy_kernel[grid](f8_output, f16_output, n_elements, BLOCK_SIZE=1024)
-
-    abs_error = torch.abs(f16_input - f16_output)
-
-    all_f8_vals_tensor = torch.tensor(range(2 ** 8), dtype=torch.uint8, device='cuda')
-    all_f8_vals = triton.reinterpret(all_f8_vals_tensor, tl.float8)
-    all_f8_vals_in_f16 = torch.empty_like(all_f8_vals_tensor, dtype=torch.float16)
-    copy_kernel[grid](all_f8_vals, all_f8_vals_in_f16, n_elements=256, BLOCK_SIZE=1024)
-
-    all_finite_f8_vals_in_f16 = all_f8_vals_in_f16[
-        torch.isfinite(all_f8_vals_in_f16)
-    ]
-
-    min_error = torch.min(
-        torch.abs(
-            f16_input.reshape((-1, 1))
-            - all_finite_f8_vals_in_f16.reshape((1, -1))
-        ),
-        dim=1,
-    )[0]
-    # 1.9375 is float8 max
-    mismatch = torch.logical_and(
-        abs_error != min_error, torch.logical_and(torch.isfinite(f16_input), torch.abs(f16_input) < 1.9375)
-    )
-    print("++++++")
-    assert torch.all(
-        torch.logical_not(mismatch)
-    ), f"f16_input[mismatch]={f16_input[mismatch]} f16_output[mismatch]={f16_output[mismatch]} abs_error[mismatch]={abs_error[mismatch]} min_error[mismatch]={min_error[mismatch]}"
-
-# test_f16_to_f8_rounding()
 test_matmul()
