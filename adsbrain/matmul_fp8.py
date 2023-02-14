@@ -67,7 +67,7 @@ def get_configs_io_bound():
     'EVEN_K': lambda args: args['K'] % (args['BLOCK_K'] * args['SPLIT_K']) == 0,
 })
 @triton.jit
-def _kernel(A, B, C, M, N, K,
+def matmul_fp8_kernel(A, B, C, M, N, K,
             stride_am, stride_ak,
             stride_bk, stride_bn,
             stride_cm, stride_cn,
@@ -97,33 +97,17 @@ def _kernel(A, B, C, M, N, K,
     B = B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
     for k in range(K, 0, -BLOCK_K * SPLIT_K):
-        # if EVEN_K:
-        #     a = tl.load(A)
-        #     b = tl.load(B)
-        # else:
-        #     a = tl.load(A, mask=rk[None, :] < k, other=0.)
-        #     b = tl.load(B, mask=rk[:, None] < k, other=0.)
-
         if EVEN_K:
-            a_int8 = tl.load(A)
-            a = a_int8.to(tl.float8, bitcast=True).to(tl.float16)
-            b_int8 = tl.load(B)
-            b = b_int8.to(tl.float8, bitcast=True).to(tl.float16)
+            a = tl.load(A).to(tl.float16)
+            b = tl.load(B).to(tl.float16)
         else:
-            a_int8 = tl.load(A, mask=rk[None, :] < k, other=0.)
-            a = a_int8.to(tl.float8, bitcast=True).to(tl.float16)
-            b_int8 = tl.load(B, mask=rk[:, None] < k, other=0.)
-            b = b_int8.to(tl.float8, bitcast=True).to(tl.float16)
+            a = tl.load(A, mask=rk[None, :] < k, other=0.).to(tl.float16)
+            b = tl.load(B, mask=rk[:, None] < k, other=0.).to(tl.float16)
 
-        # tl.printf("a++++++\n\n++++++a\n", a)
-        # tl.printf("b++++++\n\n++++++b\n", b)
-        acc += tl.dot(a, b)
-        # tl.debug_barrier()
-        # tl.printf("++++++\n\n++++++\n", acc)
-        # tl.printf("acc = %f", acc)
+        acc += tl.dot(a, b).to(tl.float16)
         A += BLOCK_K * SPLIT_K * stride_ak
         B += BLOCK_K * SPLIT_K * stride_bk
-    acc = acc.to(tl.float8).to(C.dtype.element_ty, bitcast=True)
+    acc = acc.to(C.dtype.element_ty)
     # rematerialize rm and rn to save registers
     rm = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     rn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -137,7 +121,7 @@ def _kernel(A, B, C, M, N, K,
 
 
 class _matmul(torch.autograd.Function):
-    kernel = _kernel
+    kernel = matmul_fp8_kernel
 
     _locks = dict()
 
@@ -156,10 +140,10 @@ class _matmul(torch.autograd.Function):
         # allocates output
         c = torch.empty((M, N), device=device, dtype=a.dtype)
         # accumulator types
-        ACC_TYPE = tl.float32 #if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
+        ACC_TYPE = tl.float16 #if a.dtype in [torch.float16, torch.bfloat16, torch.float32] else tl.int32
         # launch kernel
         grid = lambda META: (triton.cdiv(M, META['BLOCK_M']) * triton.cdiv(N, META['BLOCK_N']), META['SPLIT_K'])
-        _kernel[grid](a, b, c, M, N, K,
+        matmul_fp8_kernel[grid](a, b, c, M, N, K,
                       a.stride(0), a.stride(1),
                       b.stride(0), b.stride(1),
                       c.stride(0), c.stride(1),
@@ -176,14 +160,11 @@ matmul = _matmul.apply
 
 @triton.jit
 def copy_kernel(input_ptr, output_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
-    # tl.printf("BLOCKSIZE: ", BLOCK_SIZE)
     offsets = tl.program_id(axis=0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = offsets < n_elements
     input = tl.load(input_ptr + offsets, mask=mask)
     output = input
     tl.store(output_ptr + offsets, output, mask=mask)
-    # o = tl.load(output_ptr + offsets, mask=mask).to(tl.float8)
-    # tl.printf("++++++", o)
 
 def fp16_2_fp8(f16_tensor):
     n_elements = f16_tensor.numel()
@@ -191,7 +172,6 @@ def fp16_2_fp8(f16_tensor):
     f8_output = triton.reinterpret(f8_output_tensor, tl.float8)
     grid = lambda meta: (triton.cdiv(n_elements, meta['BLOCK_SIZE']),)
     copy_kernel[grid](f16_tensor, f8_output, n_elements, BLOCK_SIZE=1024)
-    # print("f8_output = ", f8_output)
     return f8_output_tensor
 
 def fp8_2_fp16(f8_tensor):
@@ -206,135 +186,118 @@ def fp8_2_fp16(f8_tensor):
 
 def test_matmul():
     torch.manual_seed(0)
-    M = 512 * 16
-    N = 768*4
-    K = 768
+    M = 512*16
+    N = 768
+    K = 768*4
     AT = False
     BT = True
     DTYPE=torch.float16
+
     a = 0.01 * torch.ones((K, M) if AT else (M, K), device="cuda", dtype=torch.float16)
     b = 0.05 * torch.ones((N, K) if BT else (K, N), device="cuda", dtype=torch.float16)
+    a_fp8 = fp16_2_fp8(a)
+    b_fp8 = fp16_2_fp8(b)
+
     a = a.t() if AT else a
     b = b.t() if BT else b
-    
-    a = 0.01 * torch.ones((M, K), device="cuda", dtype=torch.float16)
-    b = 0.05 * torch.ones((K, N), device="cuda", dtype=torch.float16)
-    
+    a_fp8 = a_fp8.t() if AT else a_fp8
+    b_fp8 = b_fp8.t() if BT else b_fp8
+
+
     a_int8 = torch.ones((K, M) if AT else (M, K), device="cuda", dtype=torch.int8)
     b_int8 = torch.ones((N, K) if BT else (K, N), device="cuda", dtype=torch.int8)
     a_int8 = a_int8.t() if AT else a_int8
     b_int8 = b_int8.t() if BT else b_int8
-    # a_int8 = torch.ones((M, K), device="cuda", dtype=torch.int8)
-    # b_int8 = torch.ones((K, N), device="cuda", dtype=torch.int8)
 
     th_c = torch.matmul(a, b)
     print(f"pytorch matmul fp16: {th_c}")
-    # tt_c = triton.testing.catch_oor(lambda: triton.ops.matmul(a, b), pytest)
-    # triton.testing.assert_almost_equal(th_c, tt_c)
 
-    # print(tt_c)
-
-    # create fp8 tensor
-    # a_fp8 = fp16_2_fp8(a)
-    # b_fp8 = fp16_2_fp8(b)
-    a_fp8 = a_int8
-    b_fp8 = b_int8
     # matmul = triton.ops.matmul
     c_fp8 = matmul(a_fp8, b_fp8)
-    # print(c_fp8)
     c_fp16 = fp8_2_fp16(c_fp8)
-    print(c_fp16)
+    print(f"trition matmul fp8: {c_fp16}")
 
+    repeat = 102400000
     ################### 1. triton matmul fp8 ###################
-    for _ in range(8):
-        c_fp8 = matmul(a_fp8, b_fp8)
+    def benchmark_triton_matmul_fp8():
+        for _ in range(8):
+            c_fp8 = matmul(a_fp8, b_fp8)
 
-    triton_matmul_fp8_graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(triton_matmul_fp8_graph):
-        c_fp8 = matmul(a_fp8, b_fp8)
+        triton_matmul_fp8_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(triton_matmul_fp8_graph):
+            c_fp8 = matmul(a_fp8, b_fp8)
 
-    triton_matmul_fp8_graph.replay()
-
-    repeat = 16
-
-    torch.cuda.synchronize()
-    start = time.time()
-    for _ in range(repeat):
         triton_matmul_fp8_graph.replay()
-    torch.cuda.synchronize()
-    end = time.time()
-    print(f"triton fp8 matmul: {(end - start) / repeat * 1000} ms")
-    
+
+
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(repeat):
+            triton_matmul_fp8_graph.replay()
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"triton fp8 matmul: {(end - start) / repeat * 1000:.3f} ms")
+
     ################### 2. triton matmul int8 ###################
-    for _ in range(8):
-        c_int8 = triton.ops.matmul(a_int8, b_int8)
+    def benchmark_triton_matmul_int8():
+        for _ in range(8):
+            c_int8 = triton.ops.matmul(a_int8, b_int8)
 
-    triton_matmul_int8_graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(triton_matmul_int8_graph):
-        c_int8 = triton.ops.matmul(a_int8, b_int8)
+        triton_matmul_int8_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(triton_matmul_int8_graph):
+            c_int8 = triton.ops.matmul(a_int8, b_int8)
 
-    triton_matmul_int8_graph.replay()
-
-    torch.cuda.synchronize()
-    start = time.time()
-    for _ in range(repeat):
         triton_matmul_int8_graph.replay()
-    torch.cuda.synchronize()
-    end = time.time()
-    print(f"triton int8 matmul: {(end - start) / repeat * 1000} ms")
-    
+
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(repeat):
+            triton_matmul_int8_graph.replay()
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"triton int8 matmul: {(end - start) / repeat * 1000:.3f} ms")
+
     # ################### 3. triton matmul fp16 ###################
-    # for _ in range(8):
-    #     c_fp16 = triton.ops.matmul(a, b)
+    def benchmark_triton_matmul_fp16():
+        for _ in range(8):
+            c_fp16 = triton.ops.matmul(a, b)
 
-    # triton_matmul_fp16_graph = torch.cuda.CUDAGraph()
-    # with torch.cuda.graph(triton_matmul_fp16_graph):
-    #     c_fp16 = triton.ops.matmul(a, b)
+        triton_matmul_fp16_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(triton_matmul_fp16_graph):
+            c_fp16 = triton.ops.matmul(a, b)
 
-    # triton_matmul_fp16_graph.replay()
+        triton_matmul_fp16_graph.replay()
 
-    # torch.cuda.synchronize()
-    # start = time.time()
-    # for _ in range(repeat):
-    #     triton_matmul_fp16_graph.replay()
-    # torch.cuda.synchronize()
-    # end = time.time()
-    # print(f"triton fp16 matmul: {(end - start) / repeat * 1000} ms")
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(repeat):
+            triton_matmul_fp16_graph.replay()
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"triton fp16 matmul: {(end - start) / repeat * 1000:.3f} ms")
 
     # ################### 4. torch matmul fp16 ###################
-    for _ in range(8):
-        th_c = torch.matmul(a, b)
-    
-    torch_matmul_fp16_graph = torch.cuda.CUDAGraph()
-    with torch.cuda.graph(torch_matmul_fp16_graph):
-        th_c = torch.matmul(a, b)
+    def benchmark_torch_matmul_fp16():
+        for _ in range(8):
+            th_c = torch.matmul(a, b)
 
-    torch_matmul_fp16_graph.replay()
-    torch.cuda.synchronize()
-    start = time.time()
-    for _ in range(repeat):
+        torch_matmul_fp16_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(torch_matmul_fp16_graph):
+            th_c = torch.matmul(a, b)
+
         torch_matmul_fp16_graph.replay()
-    torch.cuda.synchronize()
-    end = time.time()
-    print(f"torch fp16 matmul: {(end - start) / repeat * 1000} ms")
-    
-    
-    # ################### 5. torch matmul int8 ###################
-    # for _ in range(8):
-    #     c_int8 = torch.matmul(a_int8, b_int8)
+        torch.cuda.synchronize()
+        start = time.time()
+        for _ in range(repeat):
+            torch_matmul_fp16_graph.replay()
+        torch.cuda.synchronize()
+        end = time.time()
+        print(f"torch fp16 matmul: {(end - start) / repeat * 1000:.3f} ms")
 
-    # torch_matmul_int8_graph = torch.cuda.CUDAGraph()
-    # with torch.cuda.graph(torch_matmul_int8_graph):
-    #     c_int8 = torch.matmul(a_int8, b_int8)
 
-    # torch_matmul_int8_graph.replay()
-
-    # torch.cuda.synchronize()
-    # start = time.time()
-    # for _ in range(repeat):
-    #     torch_matmul_int8_graph.replay()
-    # torch.cuda.synchronize()
-    # end = time.time()
-    # print(f"torch int8 matmul: {(end - start) / repeat * 1000} ms")
+    benchmark_triton_matmul_fp8()
+    # benchmark_triton_matmul_int8()
+    # benchmark_triton_matmul_fp16()
+    # benchmark_torch_matmul_fp16()
 
 test_matmul()
