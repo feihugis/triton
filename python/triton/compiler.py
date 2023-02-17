@@ -1222,16 +1222,16 @@ static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
       return ptr_info;
     }}
     ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(ret);
-    unsigned attr;
-    CUresult status =
-        cuPointerGetAttribute(&attr, CU_POINTER_ATTRIBUTE_MEMORY_TYPE, ptr_info.dev_ptr);
-    if (ptr_info.dev_ptr &&
-        (!(attr == CU_MEMORYTYPE_DEVICE || attr == CU_MEMORYTYPE_UNIFIED) ||
-         !(status == CUDA_SUCCESS))) {{
+    if(!ptr_info.dev_ptr)
+      return ptr_info;
+    uint64_t dev_ptr;
+    int status = cuPointerGetAttribute(&dev_ptr, CU_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
+    if (status == CUDA_ERROR_INVALID_VALUE) {{
         PyErr_Format(PyExc_ValueError,
                      "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
         ptr_info.valid = false;
     }}
+    ptr_info.dev_ptr = dev_ptr;
     return ptr_info;
   }}
   PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
@@ -1293,13 +1293,13 @@ static PyMethodDef ModuleMethods[] = {{
 
 static struct PyModuleDef ModuleDef = {{
   PyModuleDef_HEAD_INIT,
-  \"launcher\",
+  \"__triton_launcher\",
   NULL, //documentation
   -1, //size
   ModuleMethods
 }};
 
-PyMODINIT_FUNC PyInit_launcher(void) {{
+PyMODINIT_FUNC PyInit___triton_launcher(void) {{
   PyObject *m = PyModule_Create(&ModuleDef);
   if(m == NULL) {{
     return NULL;
@@ -1514,14 +1514,14 @@ def make_hash(fn, **kwargs):
     return hashlib.md5((Path(fn).read_text() + triton.runtime.jit.version_key()).encode("utf-8")).hexdigest()
 
 
-# - ^\s*func\s+ : match the start of the string, any leading whitespace, the keyword func,
+# - ^\s*func\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
 # - (public\s+)? : optionally match the keyword public and any following whitespace
 # - (@\w+) : match an @ symbol followed by one or more word characters
 #   (letters, digits, or underscores), and capture it as group 1 (the function name)
 # - (\((?:%\w+: \S+(?: \{\S+ = \S+ : \S+\})?(?:, )?)*\)) : match a pair of parentheses enclosing
 #   zero or more arguments separated by commas, and capture it as group 2 (the argument list)
-mlir_prototype_pattern = r'^\s*func\s+(?:public\s+)?(@\w+)(\((?:%\w+: \S+(?: \{\S+ = \S+ : \S+\})?(?:, )?)*\))\s*\{\s*$'
+mlir_prototype_pattern = r'^\s*func\.func\s+(?:public\s+)?(@\w+)(\((?:%\w+: \S+(?: \{\S+ = \S+ : \S+\})?(?:, )?)*\))\s*\{\s*$'
 ptx_prototype_pattern = r"\.(?:visible|extern)\s+\.(?:entry|func)\s+(\w+)\s*\(([^)]*)\)"
 prototype_pattern = {
     "ttir": mlir_prototype_pattern,
@@ -1654,7 +1654,7 @@ class CompiledKernel:
     def __init__(self, so_path, metadata, asm):
         # initialize launcher
         import importlib.util
-        spec = importlib.util.spec_from_file_location("launcher", so_path)
+        spec = importlib.util.spec_from_file_location("__triton_launcher", so_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         self.c_wrapper = getattr(mod, "launch")

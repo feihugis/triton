@@ -1463,18 +1463,18 @@ def test_noop(device='cuda'):
     kernel[(1, )](x)
 
 
-@pytest.mark.parametrize("device", ['cuda', 'cpu'])
+@pytest.mark.parametrize("device", ['cuda', 'cpu', 'cpu_pinned'])
 def test_pointer_arguments(device):
     @triton.jit
     def kernel(x):
         pass
-    x = torch.empty(1024, device=device)
-    result = True
-    try:
-        kernel[(1,)](x)
-    except ValueError:
-        result = True if device == 'cpu' else False
-    assert result
+    pin_memory = 'pinned' in device
+    x = torch.empty(1024, device=device.split('_')[0], pin_memory=pin_memory)
+    if device == "cpu":
+        with pytest.raises(ValueError):
+            kernel[(1,)](x)
+    else:
+        kernel[(1, )](x)
 
 
 @pytest.mark.parametrize("value, value_type", [
@@ -1918,7 +1918,7 @@ def test_convert2d(dtype, shape, src_layout, dst_layout, device='cuda'):
 #dst = {dst_layout}
 """ + """
 module attributes {"triton_gpu.num-warps" = 4 : i32} {
-  func public @kernel_0d1d(%arg0: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f16> {tt.divisibility = 16 : i32}) {
+  func.func public @kernel_0d1d(%arg0: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f16> {tt.divisibility = 16 : i32}) {
     %cst = arith.constant dense<128> : tensor<128x1xi32, #src>
     %0 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #triton_gpu.slice<{dim = 1, parent = #src}>>
     %1 = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #triton_gpu.slice<{dim = 0, parent = #src}>>
