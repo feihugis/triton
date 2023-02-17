@@ -78,8 +78,8 @@ def matmul_fp8_kernel(A, B, C, M, N, K,
     # matrix multiplication
     pid = tl.program_id(0)
     pid_z = tl.program_id(1)
-    grid_m = (M + BLOCK_M - 1) // BLOCK_M
-    grid_n = (N + BLOCK_N - 1) // BLOCK_N
+    grid_m = tl.cdiv(M, BLOCK_M)
+    grid_n = tl.cdiv(N, BLOCK_N)
     # re-order program ID for better L2 performance
     width = GROUP_M * grid_n
     group_id = pid // width
@@ -96,13 +96,14 @@ def matmul_fp8_kernel(A, B, C, M, N, K,
     A = A + (ram[:, None] * stride_am + rk[None, :] * stride_ak)
     B = B + (rk[:, None] * stride_bk + rbn[None, :] * stride_bn)
     acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=ACC_TYPE)
-    for k in range(K, 0, -BLOCK_K * SPLIT_K):
+    for k in range(0, tl.cdiv(K, BLOCK_K * SPLIT_K)):
         if EVEN_K:
             a = tl.load(A).to(tl.float16)
             b = tl.load(B).to(tl.float16)
         else:
-            a = tl.load(A, mask=rk[None, :] < k, other=0.).to(tl.float16)
-            b = tl.load(B, mask=rk[:, None] < k, other=0.).to(tl.float16)
+            k_remaining = K - k * (BLOCK_K * SPLIT_K)
+            a = tl.load(A, mask=rk[None, :] < k_remaining, other=0.).to(tl.float16)
+            b = tl.load(B, mask=rk[:, None] < k_remaining, other=0.).to(tl.float16)
 
         acc += tl.dot(a, b).to(tl.float16)
         A += BLOCK_K * SPLIT_K * stride_ak
