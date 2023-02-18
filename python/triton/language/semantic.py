@@ -1039,8 +1039,10 @@ def dot(lhs: tl.tensor,
         _0 = builder.get_int32(0)
         ret_scalar_ty = tl.int32
     else:
-        _0 = builder.get_fp32(0)
-        ret_scalar_ty = tl.float32
+        # _0 = builder.get_fp32(0)
+        # ret_scalar_ty = tl.float32
+        _0 = builder.get_fp16(0)
+        ret_scalar_ty = tl.float16
     M = lhs.type.shape[0]
     N = rhs.type.shape[1]
     _0 = builder.create_splat(_0, [M, N])

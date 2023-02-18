@@ -559,9 +559,12 @@ Type DotOpMmaV2ConversionHelper::getLoadElemTy() {
 
 Type DotOpMmaV2ConversionHelper::getMmaRetType() const {
   Type fp32Ty = type::f32Ty(ctx);
+  Type fp16Ty = type::f16Ty(ctx);
   Type i32Ty = type::i32Ty(ctx);
   Type fp32x4Ty =
       LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, fp32Ty));
+  Type fp16x4Ty =
+      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, fp16Ty));
   Type i32x4Ty =
       LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, i32Ty));
   switch (mmaType) {
@@ -571,6 +574,8 @@ Type DotOpMmaV2ConversionHelper::getMmaRetType() const {
     return fp32x4Ty;
   case TensorCoreType::FP32_TF32_TF32_FP32:
     return fp32x4Ty;
+  case TensorCoreType::FP16_FP16_FP16_FP16:
+    return fp16x4Ty;
   case TensorCoreType::INT32_INT8_INT8_INT32:
     return i32x4Ty;
   default:
@@ -612,7 +617,10 @@ DotOpMmaV2ConversionHelper::getMmaType(triton::DotOp op) {
     if (aTy.getElementType().isF32() && bTy.getElementType().isF32() &&
         op.allowTF32())
       return TensorCoreType::FP32_TF32_TF32_FP32;
-  } else if (dTy.getElementType().isInteger(32)) {
+  } else if (dTy.getElementType().isF16()) {
+    return TensorCoreType::FP16_FP16_FP16_FP16;
+  }
+  else if (dTy.getElementType().isInteger(32)) {
     if (aTy.getElementType().isInteger(8) && bTy.getElementType().isInteger(8))
       return TensorCoreType::INT32_INT8_INT8_INT32;
   }
