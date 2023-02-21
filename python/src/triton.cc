@@ -1263,8 +1263,11 @@ void init_triton_ir(py::module &&m) {
              auto cTy = c.getType();
              if (cTy.isF16()) {
                std::cout << "++++++ cTy is FP16" << std::endl;
+             } else if (cTy.isF32()) {
+               std::cout << "++++++ cTy is FP32" << std::endl;
              } else {
-               std::cout << "++++++ cTy is not FP16" << std::endl;
+               std::cout << "++++++ cTy is not FP16 or FP32" << std::endl;
+               cTy.print(llvm::outs());
              }
              return self.create<mlir::triton::DotOp>(loc, c.getType(), a, b, c,
                                                      allowTF32);

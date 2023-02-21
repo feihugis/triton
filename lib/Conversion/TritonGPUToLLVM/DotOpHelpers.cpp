@@ -493,6 +493,8 @@ DotOpMmaV2ConversionHelper::getRepMN(const RankedTensorType &tensorTy) {
 
 Type DotOpMmaV2ConversionHelper::getShemPtrTy() const {
   switch (mmaType) {
+  case TensorCoreType::FP16_FP16_FP16_FP16:
+    return ptr_ty(type::f16Ty(ctx), 3);
   case TensorCoreType::FP32_FP16_FP16_FP32:
     return ptr_ty(type::f16Ty(ctx), 3);
   case TensorCoreType::FP32_BF16_BF16_FP32:
@@ -527,6 +529,8 @@ Type DotOpMmaV2ConversionHelper::getMatType() const {
   switch (mmaType) {
   case TensorCoreType::FP32_FP16_FP16_FP32:
     return fp16x2Pack4Ty;
+  case TensorCoreType::FP16_FP16_FP16_FP16:
+    return fp16x2Pack4Ty;
   case TensorCoreType::FP32_BF16_BF16_FP32:
     return bf16x2Pack4Ty;
   case TensorCoreType::FP32_TF32_TF32_FP32:
@@ -542,6 +546,8 @@ Type DotOpMmaV2ConversionHelper::getMatType() const {
 
 Type DotOpMmaV2ConversionHelper::getLoadElemTy() {
   switch (mmaType) {
+  case TensorCoreType::FP16_FP16_FP16_FP16:
+    return vec_ty(type::f16Ty(ctx), 2);
   case TensorCoreType::FP32_FP16_FP16_FP32:
     return vec_ty(type::f16Ty(ctx), 2);
   case TensorCoreType::FP32_BF16_BF16_FP32:
@@ -1067,6 +1073,7 @@ Value MMA16816ConversionHelper::loadC(Value tensor, Value llTensor) const {
   // Load a normal C tensor with mma layout, that should be a
   // LLVM::struct with fcSize elements.
   auto structTy = llTensor.getType().cast<LLVM::LLVMStructType>();
+  std::cout <<  "++++++  repM = " << repM << " | repN = " << repN << " | structTy.getBody().size() = " << structTy.getBody().size() << "   |  fcSize  = " << fcSize << std::endl;
   assert(structTy.getBody().size() == fcSize &&
          "DotOp's $c operand should pass the same number of values as $d in "
          "mma layout.");

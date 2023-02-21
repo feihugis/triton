@@ -269,6 +269,7 @@ private:
           {TensorCoreType::FP32_FP16_FP16_FP32, {16, 8, 16}},
           {TensorCoreType::FP32_BF16_BF16_FP32, {16, 8, 16}},
           {TensorCoreType::FP32_TF32_TF32_FP32, {16, 8, 8}},
+          {TensorCoreType::FP16_FP16_FP16_FP16, {16, 8, 16}},
 
           {TensorCoreType::INT32_INT1_INT1_INT32, {16, 8, 256}},
           {TensorCoreType::INT32_INT4_INT4_INT32, {16, 8, 64}},
@@ -284,6 +285,8 @@ private:
           {TensorCoreType::FP32_FP16_FP16_FP32, {8, 8, 8}},
           {TensorCoreType::FP32_BF16_BF16_FP32, {8, 8, 8}},
           {TensorCoreType::FP32_TF32_TF32_FP32, {8, 8, 4}},
+          {TensorCoreType::FP16_FP16_FP16_FP16, {8, 8, 8}},
+
 
           {TensorCoreType::INT32_INT1_INT1_INT32, {8, 8, 64}},
           {TensorCoreType::INT32_INT4_INT4_INT32, {8, 8, 32}},
@@ -302,7 +305,7 @@ private:
       {TensorCoreType::FP32_TF32_TF32_FP32,
        "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32"},
       {TensorCoreType::FP16_FP16_FP16_FP16,
-       "mma.sync.aligned.m16n8k8.row.col.f16.f16.f16.f16"},
+       "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16"},
 
       {TensorCoreType::INT32_INT1_INT1_INT32,
        "mma.sync.aligned.m16n8k256.row.col.s32.b1.b1.s32.xor.popc"},
@@ -317,6 +320,7 @@ private:
       {TensorCoreType::FP32_FP16_FP16_FP32, 8},
       {TensorCoreType::FP32_BF16_BF16_FP32, 8},
       {TensorCoreType::FP32_TF32_TF32_FP32, 4},
+      {TensorCoreType::FP16_FP16_FP16_FP16, 8},
 
       {TensorCoreType::INT32_INT1_INT1_INT32, 128},
       {TensorCoreType::INT32_INT4_INT4_INT32, 32},
