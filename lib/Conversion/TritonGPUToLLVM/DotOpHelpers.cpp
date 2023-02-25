@@ -488,6 +488,9 @@ DotOpMmaV2ConversionHelper::getRepMN(const RankedTensorType &tensorTy) {
   auto [instrM, instrN] = getInstrShapeMN();
   int repM = std::max<int>(M / (wpt[0] * instrM), 1);
   int repN = std::max<int>(N / (wpt[1] * instrN), 1);
+  std::cout << "++++++ repM: " << repM << ", repN: " << repN << ", wpt[0]: " << wpt[0]
+            << ", wpt[1]: " << wpt[1] << ", instrM: " << instrM
+            << ", instrN: " << instrN << ", M: " << M << ", N: " << N << std::endl;
   return {repM, repN};
 }
 
@@ -569,8 +572,10 @@ Type DotOpMmaV2ConversionHelper::getMmaRetType() const {
   Type i32Ty = type::i32Ty(ctx);
   Type fp32x4Ty =
       LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, fp32Ty));
-  Type fp16x4Ty =
-      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, fp16Ty));
+  Type fp32x2Ty =
+      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(2, fp32Ty));
+  Type fp16x2Ty =
+      LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(2, fp16Ty));
   Type i32x4Ty =
       LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(4, i32Ty));
   switch (mmaType) {
@@ -581,7 +586,7 @@ Type DotOpMmaV2ConversionHelper::getMmaRetType() const {
   case TensorCoreType::FP32_TF32_TF32_FP32:
     return fp32x4Ty;
   case TensorCoreType::FP16_FP16_FP16_FP16:
-    return fp16x4Ty;
+    return fp16x2Ty;
   case TensorCoreType::INT32_INT8_INT8_INT32:
     return i32x4Ty;
   default:
@@ -596,7 +601,7 @@ DotOpMmaV2ConversionHelper::getTensorCoreTypeFromOperand(Type operandTy) {
   auto tensorTy = operandTy.cast<RankedTensorType>();
   auto elemTy = tensorTy.getElementType();
   if (elemTy.isF16())
-    return TensorCoreType::FP32_FP16_FP16_FP32;
+    return TensorCoreType::FP16_FP16_FP16_FP16;
   if (elemTy.isF32())
     return TensorCoreType::FP32_TF32_TF32_FP32;
   if (elemTy.isBF16())
@@ -996,10 +1001,12 @@ Value MMA16816ConversionHelper::loadA(Value tensor,
   std::function<void(int, int)> loadFn;
   auto [matShapeM, matShapeN, matShapeK] = getMmaMatShape(aTensorTy);
   auto [mmaInstrM, mmaInstrN, mmaInstrK] = getMmaInstrShape(aTensorTy);
+  std::cout << "++++++ matShapeM: " << matShapeM << ", matShapeN: " << matShapeN << ", matShapeK: " << matShapeK << std::endl;
+  std::cout << "++++++ mmaInstrM: " << mmaInstrM << ", mmaInstrN: " << mmaInstrN << ", mmaInstrK: " << mmaInstrK << std::endl;
 
   int numRepM = getNumRepM(aTensorTy, shape[0]);
   int numRepK = getNumRepK(aTensorTy, shape[1]);
-
+  std::cout << "++++++ numRepM: " << numRepM << ", numRepK: " << numRepK << std::endl;
   if (aTensorTy.getEncoding().isa<SharedEncodingAttr>()) {
     Value warpM = getWarpM(shape[0]);
     // load from smem
@@ -1072,11 +1079,22 @@ Value MMA16816ConversionHelper::loadC(Value tensor, Value llTensor) const {
          "Currently, we only support $c with a mma layout.");
   // Load a normal C tensor with mma layout, that should be a
   // LLVM::struct with fcSize elements.
+  auto matTy = helper.getMatType().cast<LLVM::LLVMStructType>();
+  matTy.print(llvm::outs());
+  // auto structTy = llTensor.getType().cast<matTy>();
+  llTensor.print(llvm::outs());
   auto structTy = llTensor.getType().cast<LLVM::LLVMStructType>();
   std::cout <<  "++++++  repM = " << repM << " | repN = " << repN << " | structTy.getBody().size() = " << structTy.getBody().size() << "   |  fcSize  = " << fcSize << std::endl;
+  tensorTy.print(llvm::outs());
+  std::cout << "\n--------------" << std::endl;
+  llTensor.print(llvm::outs());
+  std::cout << "\n--------------" << std::endl;
+
   assert(structTy.getBody().size() == fcSize &&
          "DotOp's $c operand should pass the same number of values as $d in "
          "mma layout.");
+  
+
   return llTensor;
 }
 LogicalResult MMA16816ConversionHelper::convertDot(Value a, Value b, Value c,
@@ -1088,6 +1106,13 @@ LogicalResult MMA16816ConversionHelper::convertDot(Value a, Value b, Value c,
 
   auto aTensorTy = a.getType().cast<RankedTensorType>();
   auto dTensorTy = d.getType().cast<RankedTensorType>();
+  aTensorTy.print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::aTensorTy = ");
+  b.getType().cast<RankedTensorType>().print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::bTensorTy = ");
+  c.getType().cast<RankedTensorType>().print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::cTensorTy = ");
+  dTensorTy.print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::dTensorTy = ");
+  loadedA.print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::loadedA = ");
+  llvm::outs() << "\n";
+
 
   SmallVector<int64_t> aShape(aTensorTy.getShape().begin(),
                               aTensorTy.getShape().end());
@@ -1104,6 +1129,18 @@ LogicalResult MMA16816ConversionHelper::convertDot(Value a, Value b, Value c,
   ValueTable hb = getValuesFromDotOperandLayoutStruct(
       loadedB, std::max(numRepN / 2, 1), numRepK);
   auto fc = getElementsFromStruct(loc, loadedC, rewriter);
+  Type cTy = vec_ty(c.getType().cast<RankedTensorType>().getElementType(), 2);
+  cTy.print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::cTy = ");
+  SmallVector<Value> cVals;
+
+  for (int i = 0; i < fc.size(); i += 2) {
+    Value packed = rewriter.create<LLVM::UndefOp>(loc, cTy);
+    packed = insert_element(cTy, packed, fc[i], i32_val(0));
+    packed = insert_element(cTy, packed, fc[i+1], i32_val(1));
+    cVals.push_back(packed);
+  }
+  // ValueTable hc = getValuesFromDotOperandLayoutStruct(
+  //     loadedC, numRepM, std::max(numRepN / 2, 1));
 
   auto callMma = [&](unsigned m, unsigned n, unsigned k) {
     unsigned colsPerThread = numRepN * 2;
@@ -1111,7 +1148,8 @@ LogicalResult MMA16816ConversionHelper::convertDot(Value a, Value b, Value c,
     auto &mma = *builder.create(helper.getMmaInstr().str());
     // using =r for float32 works but leads to less readable ptx.
     bool isIntMMA = dTensorTy.getElementType().isInteger(32);
-    auto retArgs = builder.newListOperand(4, isIntMMA ? "=r" : "=f");
+    // auto retArgs = builder.newListOperand(4, isIntMMA ? "=r" : "=f");
+    auto retArgs = builder.newListOperand(2, "=r");
     auto aArgs = builder.newListOperand({
         {ha[{m, k}], "r"},
         {ha[{m + 1, k}], "r"},
@@ -1121,19 +1159,38 @@ LogicalResult MMA16816ConversionHelper::convertDot(Value a, Value b, Value c,
     auto bArgs =
         builder.newListOperand({{hb[{n, k}], "r"}, {hb[{n, k + 1}], "r"}});
     auto cArgs = builder.newListOperand();
-    for (int i = 0; i < 4; ++i) {
-      cArgs->listAppend(builder.newOperand(fc[m * colsPerThread + 4 * n + i],
-                                           std::to_string(i)));
-      // reuse the output registers
-    }
+    // for (int i = 0; i < 2; ++i) {
+    //   cArgs->listAppend(builder.newOperand(fc[m * colsPerThread + 4 * n + i],
+    //                                        std::to_string(i)));
+    //   // reuse the output registers
+    // }
+    // auto cArgs = builder.newListOperand({{hc[{m, n}], "r"}, {hc[{m, n + 1}], "r"}});
+    cArgs->listAppend(builder.newOperand(cVals[(m * colsPerThread + 4 * n)/2], "0"));
+    cArgs->listAppend(builder.newOperand(cVals[(m * colsPerThread + 4 * n)/2 + 1], "1"));
+
+    // cArgs->listAppend(builder.newOperand((fc[m * colsPerThread + 4 * n + 2], fc[m * colsPerThread + 4 * n + 3]), std::to_string(0)));
+
 
     mma(retArgs, aArgs, bArgs, cArgs);
-    Value mmaOut = builder.launch(rewriter, loc, helper.getMmaRetType());
+    Type dTy = LLVM::LLVMStructType::getLiteral(ctx, SmallVector<Type>(2, cTy));
+    // Value mmaOut = builder.launch(rewriter, loc, helper.getMmaRetType());
+    Value mmaOut = builder.launch(rewriter, loc, dTy);
 
-    Type elemTy = mmaOut.getType().cast<LLVM::LLVMStructType>().getBody()[0];
-    for (int i = 0; i < 4; ++i)
-      fc[m * colsPerThread + 4 * n + i] =
-          extract_val(elemTy, mmaOut, i32_arr_attr(i));
+    mmaOut.print(llvm::outs() << "\n++++++ MMA16816ConversionHelper::convertDot::callMma::mmaOut = $$$$$$ ");
+    llvm::outs() << " $$$$$$ \n";
+
+    Type elemTy = c.getType().cast<RankedTensorType>().getElementType(); //mmaOut.getType().cast<LLVM::LLVMStructType>().getBody()[0];
+    // for (int i = 0; i < 4; ++i)
+    //   fc[m * colsPerThread + 4 * n + i] =
+    //       extract_val(elemTy, mmaOut, i32_arr_attr(i));
+    // std::cout << "++++++ MMA16816ConversionHelper::convertDot::callMma:: m = " << m << ", n = " << n << ", k = " << k << std::endl;
+    // auto fp16x2Vec0 = extract_element(mmaOut, i32_val(0), dTy);
+    auto rets = getElementsFromStruct(loc, mmaOut, rewriter);
+    // auto fp16x2Vec1 = extract_element(mmaOut, i32_val(1), dTy);
+    fc[m * colsPerThread + 4 * n + 0] = bitcast(extract_element(rets[0], i32_val(0)), dTensorTy.getElementType()); //extract_element(elemTy, fp16x2Vec0, i32_arr_attr(0));
+    fc[m * colsPerThread + 4 * n + 1] = bitcast(extract_element(rets[0], i32_val(1)), dTensorTy.getElementType()); //extract_element(elemTy, fp16x2Vec0, i32_arr_attr(1));
+    fc[m * colsPerThread + 4 * n + 2] = bitcast(extract_element(rets[1], i32_val(0)), dTensorTy.getElementType()); //extract_element(elemTy, fp16x2Vec0, i32_arr_attr(2));
+    fc[m * colsPerThread + 4 * n + 3] = bitcast(extract_element(rets[1], i32_val(1)), dTensorTy.getElementType()); //extract_element(elemTy, fp16x2Vec0, i32_arr_attr(3));
   };
 
   for (int k = 0; k < numRepK; ++k)

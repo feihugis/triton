@@ -249,7 +249,6 @@ struct DotOpMmaV2ConversionHelper {
   }
 
   StringRef getMmaInstr() const {
-    std::cout << "++++++ DEBUG StringRef getMmaInstr() " << std::endl;
     assert(mmaType != TensorCoreType::NOT_APPLICABLE &&
            "Unknown mma type found.");
     return mmaInstrPtx.at(mmaType);

@@ -242,11 +242,8 @@ mlir::LogicalResult mlir::triton::DotOp::inferReturnTypes(
     SmallVectorImpl<Type> &inferredReturnTypes) {
   // type is the same as the accumulator
   auto accTy = operands[2].getType().cast<RankedTensorType>();
-  if (accTy.getElementType().isF16()) {
-    std::cout << "++++++ accTy is FP16" << std::endl;
-  } else {
-    std::cout << "++++++ accTy is not FP16" << std::endl;
-  }
+  // accTy.print(llvm::outs()<<"\n++++++ mlir::triton::DotOp::inferReturnTypes::accTy: ");
+  // llvm::outs() << "\n";
   inferredReturnTypes.push_back(accTy);
 
   // verify encodings

@@ -262,15 +262,19 @@ struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
           triton::gpu::DotOperandEncodingAttr::get(getContext(), 0, dEncoding);
       auto dstType = RankedTensorType::get(aType.getShape(),
                                            aType.getElementType(), encoding);
+      dstType.print(llvm::outs() << "\n++++++ TritonDotPattern::a::dstType: ");
       a = rewriter.create<triton::gpu::ConvertLayoutOp>(a.getLoc(), dstType, a);
+      a.print(llvm::outs() << "\n++++++ TritonDotPattern::a: ");
     }
     if (!bEncoding.isa<triton::gpu::DotOperandEncodingAttr>()) {
       Attribute encoding =
           triton::gpu::DotOperandEncodingAttr::get(getContext(), 1, dEncoding);
       auto dstType = RankedTensorType::get(bType.getShape(),
                                            bType.getElementType(), encoding);
+      dstType.print(llvm::outs() << "\n++++++ TritonDotPattern::b::dstType: ");
       b = rewriter.create<triton::gpu::ConvertLayoutOp>(b.getLoc(), dstType, b);
     }
+    retType.print(llvm::outs() << "\n++++++ TritonDotPattern::c::retType: ");
     c = rewriter.create<triton::gpu::ConvertLayoutOp>(c.getLoc(), retType, c);
 
     rewriter.replaceOpWithNewOp<triton::DotOp>(op, retType, a, b, c,
