@@ -162,6 +162,7 @@ def download_and_copy(src_path, variable, version, url_func):
             src_path = os.path.join(temp_dir, src_path)
             os.makedirs(os.path.split(dst_path)[0], exist_ok=True)
             shutil.copy(src_path, dst_path)
+        print(f'finish downloading {url} to {dst_path}...')
 
 
 # ---- cmake extension ----
